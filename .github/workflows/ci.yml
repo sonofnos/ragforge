@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    # No OPENAI_API_KEY on purpose: this forces every test to run against
+    # the deterministic fake LLM/embeddings backends, so CI is hermetic and
+    # free. The Postgres/pgvector integration suite (packages/core) spins up
+    # its own container via Testcontainers, and the Mongo integration suite
+    # (apps/api) spins up its own mongod via mongodb-memory-server --
+    # ubuntu-latest runners have Docker available for the former.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages/core
+        run: npm run build -w @ragforge/core
+
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Lint
+        run: npm run lint --workspaces --if-present
+
+      - name: Build
+        run: npm run build --workspaces --if-present
+
+      - name: Unit tests
+        run: npm run test --workspaces --if-present
+
+      - name: Integration tests (real Postgres/pgvector + real Mongo)
+        run: |
+          npm run test:integration -w @ragforge/core
+          npm run test:integration -w @ragforge/api
