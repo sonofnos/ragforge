@@ -86,6 +86,37 @@ export class ChatOpenAIAnswerClient implements AnswerClient {
 }
 
 /**
+ * Real backend, using LangChain's ChatGoogleGenerativeAI against Google's
+ * Gemini API (free tier, no card on file). Selected ahead of the OpenAI
+ * client when `GOOGLE_API_KEY` is set; see `getAnswerClient` below.
+ *
+ * `gemini-2.0-flash` -- the obvious free-tier pick as of when this repo's
+ * OpenAI path was written -- was shut down June 2026; `gemini-2.5-flash` is
+ * the current (Oct 2026) stable free-tier flash model.
+ */
+export class GeminiAnswerClient implements AnswerClient {
+  private model: import("@langchain/google-genai").ChatGoogleGenerativeAI;
+
+  constructor(apiKey: string, modelName = "gemini-2.5-flash") {
+    const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
+    this.model = new ChatGoogleGenerativeAI({ apiKey, model: modelName, temperature: 0 });
+  }
+
+  async answer(question: string, context: ContextChunk[]): Promise<AnswerResult> {
+    if (context.length === 0) {
+      return { text: "I don't have any relevant source material to answer that.", citedRefs: [] };
+    }
+    const response = await this.model.invoke([
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildPrompt(question, context) },
+    ]);
+    const text = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+    const validRefs = new Set(context.map((c) => c.ref));
+    return { text, citedRefs: extractCitedRefs(text, validRefs) };
+  }
+}
+
+/**
  * Deterministic test double. Cites every context chunk it was given (in
  * order) and echoes a snippet of each, so citation-mapping tests can assert
  * on exact chunk ids without depending on network access. Optionally takes
@@ -117,9 +148,22 @@ export class FakeAnswerClient implements AnswerClient {
   }
 }
 
-export function getAnswerClient(apiKey: string | undefined): AnswerClient {
-  if (apiKey) {
-    return new ChatOpenAIAnswerClient(apiKey);
+export interface AnswerClientKeys {
+  googleApiKey?: string;
+  openaiApiKey?: string;
+}
+
+/**
+ * Selects, in order: Gemini (if `GOOGLE_API_KEY` is set) -- free tier, no
+ * card on file -- then OpenAI (if `OPENAI_API_KEY` is set), then the
+ * deterministic fake. Same preference order as `getEmbeddingsClient`.
+ */
+export function getAnswerClient(keys: AnswerClientKeys): AnswerClient {
+  if (keys.googleApiKey) {
+    return new GeminiAnswerClient(keys.googleApiKey);
+  }
+  if (keys.openaiApiKey) {
+    return new ChatOpenAIAnswerClient(keys.openaiApiKey);
   }
   return new FakeAnswerClient();
 }

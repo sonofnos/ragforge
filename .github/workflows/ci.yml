@@ -10,10 +10,11 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
 
-    # No OPENAI_API_KEY on purpose: this forces every test to run against
-    # the deterministic fake LLM/embeddings backends, so CI is hermetic and
-    # free. The Postgres/pgvector integration suite (packages/core) spins up
-    # its own container via Testcontainers, and the Mongo integration suite
+    # No GOOGLE_API_KEY or OPENAI_API_KEY on purpose: this forces every test
+    # to run against the deterministic fake LLM/embeddings backends, so CI
+    # is hermetic and free. The Postgres/pgvector integration suite
+    # (packages/core) spins up its own container via Testcontainers, and the
+    # Mongo integration suite
     # (apps/api) spins up its own mongod via mongodb-memory-server --
     # ubuntu-latest runners have Docker available for the former.
     steps:

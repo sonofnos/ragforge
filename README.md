@@ -13,10 +13,11 @@ genuinely exercise its stack end to end rather than name-drop it.
   Routes for uploading documents, listing documents, asking questions (RAG),
   and chat history.
 - **packages/core** -- the RAG orchestration: LangChain.js (`@langchain/core`,
-  `@langchain/openai`, `@langchain/textsplitters`) actually does document
-  splitting, embedding, and answer generation via `ChatOpenAI` /
-  `OpenAIEmbeddings` -- not a hand-rolled OpenAI client. Chunk + embedding
-  storage is PostgreSQL + pgvector.
+  `@langchain/openai`, `@langchain/google-genai`, `@langchain/textsplitters`)
+  actually does document splitting, embedding, and answer generation via
+  `ChatOpenAI`/`OpenAIEmbeddings` or `ChatGoogleGenerativeAI`/
+  `GoogleGenerativeAIEmbeddings` -- not a hand-rolled API client. Chunk +
+  embedding storage is PostgreSQL + pgvector.
 - **MongoDB** stores document metadata, chat sessions/messages, and user
   profile records -- a real separation of concerns from Postgres, which only
   ever stores chunk text + embeddings.
@@ -52,20 +53,59 @@ Every external, costed, or networked dependency sits behind a narrow
 interface, mirroring the pattern used in this author's other portfolio repos
 (docwise's `backend/agent/llm.py`):
 
-- `EmbeddingsClient` -- real: `OpenAIEmbeddingsClient` (LangChain's
-  `OpenAIEmbeddings`). Fake: `FakeEmbeddingsClient`, a deterministic
-  hash-based embedder (same text -> same vector, shared vocabulary -> closer
-  vectors) so retrieval-order tests are meaningful with zero API calls.
-- `AnswerClient` -- real: `ChatOpenAIAnswerClient` (LangChain's `ChatOpenAI`).
-  Fake: `FakeAnswerClient`, which cites every chunk it's given, or takes
-  canned text (including deliberately hallucinated citations, for testing
-  the dropping behavior).
+- `EmbeddingsClient` -- real: `GeminiEmbeddingsClient` (LangChain's
+  `GoogleGenerativeAIEmbeddings`, Gemini's `gemini-embedding-001`, free tier)
+  or `OpenAIEmbeddingsClient` (LangChain's `OpenAIEmbeddings`). Fake:
+  `FakeEmbeddingsClient`, a deterministic hash-based embedder (same text ->
+  same vector, shared vocabulary -> closer vectors) so retrieval-order tests
+  are meaningful with zero API calls.
+- `AnswerClient` -- real: `GeminiAnswerClient` (LangChain's
+  `ChatGoogleGenerativeAI`, Gemini's `gemini-2.5-flash`, free tier) or
+  `ChatOpenAIAnswerClient` (LangChain's `ChatOpenAI`). Fake:
+  `FakeAnswerClient`, which cites every chunk it's given, or takes canned
+  text (including deliberately hallucinated citations, for testing the
+  dropping behavior).
 - `TokenVerifier` -- real: `FirebaseTokenVerifier` (`firebase-admin`). Fake:
   `FakeTokenVerifier`, which accepts tokens of the form `fake:<uid>:<email>`.
 
-`getEmbeddingsClient(apiKey)` / `getAnswerClient(apiKey)` return the fake
-when `OPENAI_API_KEY` is unset and the real implementation otherwise, so
-tests and local dev run free and offline by default.
+`getEmbeddingsClient({ googleApiKey, openaiApiKey })` /
+`getAnswerClient({ googleApiKey, openaiApiKey })` pick, in order: Gemini if
+`GOOGLE_API_KEY` is set, OpenAI if `OPENAI_API_KEY` is set, else the
+deterministic fake -- so tests and local dev run free and offline by
+default. Gemini is checked first because it's the provider that doesn't
+require a card on file.
+
+### Gemini path -- rate limits and what was actually verified
+
+- **Env var:** `GOOGLE_API_KEY`. This is the exact variable name
+  `@langchain/google-genai` reads internally (confirmed by reading its
+  source, not guessed) -- `GEMINI_API_KEY` is not read by this package, so
+  don't set that instead.
+- **Models:** `gemini-2.5-flash` for answers, `gemini-embedding-001` for
+  embeddings. The obvious first picks -- `gemini-2.0-flash` and
+  `text-embedding-004` -- are both already gone as of this writing
+  (2026-10-02): `text-embedding-004` was shut down January 14 2026, and
+  `gemini-2.0-flash` shut down June 1 2026. `gemini-embedding-001` defaults
+  to 3072-dimensional vectors; the installed LangChain wrapper
+  (`@langchain/google-genai` 0.2.x) doesn't expose the Gemini API's
+  `outputDimensionality` truncation parameter, so the Postgres vector column
+  is sized dynamically from `embeddings.dimensions` (3072 for Gemini, 1536
+  for OpenAI/the fake) rather than a hardcoded constant -- see
+  `apps/api/src/server.ts`.
+- **Free-tier rate limits (checked Oct 2026, not assumed):** sources
+  disagree on the exact number -- somewhere between roughly 500 and 1,500
+  requests/day for `gemini-2.5-flash`, with a tighter per-minute cap (around
+  10 RPM) -- and Google has changed these limits multiple times through
+  2026, so treat any specific number here as approximate and re-check
+  Google's current quota page before relying on it.
+- **Not verified against a real key.** No `GOOGLE_API_KEY` was available
+  while building this; `GeminiAnswerClient`/`GeminiEmbeddingsClient` are
+  written against the documented `@langchain/google-genai` API (whose
+  source was read directly, including to confirm the env var name and the
+  absence of dimension-truncation support) and typecheck/build cleanly, and
+  the fake-backed path was exercised by the full test suite, but no real
+  Gemini API call was made. Say so plainly rather than claiming it works:
+  it's untested against the live API until a real key is set.
 
 ## Tests
 
@@ -156,6 +196,10 @@ npm run test:integration -w @ragforge/api    # downloads a mongod binary on firs
   this build; the LangChain wiring (`ChatOpenAI`, `OpenAIEmbeddings`) is
   correct against the documented LangChain.js API and compiles, but a real
   OpenAI call was never made.
+- **`GeminiAnswerClient` / `GeminiEmbeddingsClient` were never called
+  against the real Gemini API either**, for the same reason: no
+  `GOOGLE_API_KEY` was available while building this. See "Gemini path"
+  above.
 - **No deployment.** No Vercel/Render/Neon/Atlas/Firebase Hosting setup was
   done -- this repo is the application and its tests only, as scoped.
 - **File upload is plain text/markdown only.** `apps/api`'s `/api/documents`
@@ -177,6 +221,8 @@ npm run dev -w @ragforge/api   # :4000
 npm run dev -w @ragforge/web   # :3000
 ```
 
-Without `OPENAI_API_KEY` set on the API, ask/upload still work end to end
-using the deterministic fake LLM/embeddings -- useful for exercising the UI
-without any cost.
+Without `GOOGLE_API_KEY` or `OPENAI_API_KEY` set on the API, ask/upload
+still work end to end using the deterministic fake LLM/embeddings -- useful
+for exercising the UI without any cost. Set `GOOGLE_API_KEY` to a real
+Gemini API key (free tier, no card required) to use the real Gemini-backed
+clients; it's checked before `OPENAI_API_KEY`.

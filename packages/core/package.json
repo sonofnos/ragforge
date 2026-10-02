@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@langchain/core": "^0.3.26",
+    "@langchain/google-genai": "^0.2.18",
     "@langchain/openai": "^0.3.17",
     "@langchain/textsplitters": "^0.1.0",
     "pg": "^8.13.1"

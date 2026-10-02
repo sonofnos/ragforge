@@ -40,6 +40,39 @@ export class OpenAIEmbeddingsClient implements EmbeddingsClient {
 }
 
 /**
+ * Real backend: LangChain's GoogleGenerativeAIEmbeddings, backed by Google's
+ * Gemini API (free tier, no card on file -- see README for the current rate
+ * limits). Selected ahead of the OpenAI client when `GOOGLE_API_KEY` is set;
+ * see `getEmbeddingsClient` below.
+ *
+ * `gemini-embedding-001` is the current (as of Oct 2026) text embedding
+ * model on the Gemini API; `text-embedding-004` -- the model this repo would
+ * otherwise have reached for -- was shut down in Jan 2026. It outputs
+ * 3072-dimensional vectors by default, and the installed version of
+ * `@langchain/google-genai` (0.2.x) does not expose the API's
+ * `outputDimensionality` truncation parameter, so this client's dimension is
+ * genuinely 3072, not 1536 -- `getEmbeddingsClient`'s caller must size the
+ * vector store from `embeddings.dimensions`, not from a hardcoded constant.
+ */
+export class GeminiEmbeddingsClient implements EmbeddingsClient {
+  readonly dimensions = 3072;
+  private embeddings: import("@langchain/google-genai").GoogleGenerativeAIEmbeddings;
+
+  constructor(apiKey: string, model = "gemini-embedding-001") {
+    const { GoogleGenerativeAIEmbeddings } = require("@langchain/google-genai");
+    this.embeddings = new GoogleGenerativeAIEmbeddings({ apiKey, model });
+  }
+
+  embedDocuments(texts: string[]): Promise<number[][]> {
+    return this.embeddings.embedDocuments(texts);
+  }
+
+  embedQuery(text: string): Promise<number[]> {
+    return this.embeddings.embedQuery(text);
+  }
+}
+
+/**
  * Deterministic fake: hashes each text into a fixed-length vector so
  * identical/similar inputs produce similar (even identical, for exact
  * matches) vectors, which is enough for retrieval-ordering tests without
@@ -85,9 +118,24 @@ export class FakeEmbeddingsClient implements EmbeddingsClient {
   }
 }
 
-export function getEmbeddingsClient(apiKey: string | undefined): EmbeddingsClient {
-  if (apiKey) {
-    return new OpenAIEmbeddingsClient(apiKey);
+export interface EmbeddingsClientKeys {
+  googleApiKey?: string;
+  openaiApiKey?: string;
+}
+
+/**
+ * Selects, in order: Gemini (if `GOOGLE_API_KEY` is set) -- free tier, no
+ * card on file -- then OpenAI (if `OPENAI_API_KEY` is set), then the
+ * deterministic fake. Gemini is preferred because it's the provider Chris
+ * can actually use without putting a card down; OpenAI is kept as a path for
+ * anyone who already has a key.
+ */
+export function getEmbeddingsClient(keys: EmbeddingsClientKeys): EmbeddingsClient {
+  if (keys.googleApiKey) {
+    return new GeminiEmbeddingsClient(keys.googleApiKey);
+  }
+  if (keys.openaiApiKey) {
+    return new OpenAIEmbeddingsClient(keys.openaiApiKey);
   }
   return new FakeEmbeddingsClient(EMBEDDING_DIMENSIONS);
 }
